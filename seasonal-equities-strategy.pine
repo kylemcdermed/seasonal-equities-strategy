@@ -1,0 +1,132 @@
+//@version=5
+strategy("SPY Seasonal Monthly Strategy", shorttitle="SPY Seasonal", overlay=true, 
+         default_qty_type=strategy.percent_of_equity, default_qty_value=50, 
+         pyramiding=0, calc_on_order_fills=true, process_orders_on_close=true)
+
+// Strategy Settings
+position_size_pct = input.float(50.0, title="Position Size (%)", minval=10.0, maxval=100.0, group="Strategy Settings")
+enable_long = input.bool(true, title="Enable Long Positions", group="Strategy Settings")
+enable_short = input.bool(true, title="Enable Short Positions", group="Strategy Settings")
+
+// Monthly Performance Calculation
+get_monthly_return(year_offset) =>
+    // Get the close price from same month last year
+    last_year_month_start = request.security(syminfo.tickerid, "1M", close[12 + year_offset], lookahead=barmerge.lookahead_off)
+    last_year_month_end = request.security(syminfo.tickerid, "1M", close[11 + year_offset], lookahead=barmerge.lookahead_off)
+    
+    if na(last_year_month_start) or na(last_year_month_end)
+        na
+    else
+        (last_year_month_end - last_year_month_start) / last_year_month_start * 100
+
+// Get last year's performance for current month
+last_year_return = get_monthly_return(0)
+
+// Check if we're at the start of a new month
+new_month = month != month[1]
+
+// Position tracking
+var string current_position = "none"
+var int entry_month = na
+var float entry_price = na
+
+// Calculate shares to trade
+shares_to_trade = math.floor((strategy.equity * position_size_pct / 100) / close)
+
+// Entry Logic - Execute at the beginning of each month
+if new_month and not na(last_year_return)
+    
+    // Close any existing position first
+    if current_position == "long"
+        strategy.close("Long", comment="Month End")
+    if current_position == "short"
+        strategy.close("Short", comment="Month End")
+    
+    // Reset position tracking
+    current_position := "none"
+    
+    // Enter new position based on last year's performance
+    if last_year_return > 0 and enable_long
+        strategy.entry("Long", strategy.long, qty=shares_to_trade, comment="Seasonal Long")
+        current_position := "long"
+        entry_month := month
+        entry_price := close
+        
+    else if last_year_return < 0 and enable_short
+        strategy.entry("Short", strategy.short, qty=shares_to_trade, comment="Seasonal Short")
+        current_position := "short"
+        entry_month := month
+        entry_price := close
+
+// Month-end exit logic (close positions at end of month)
+last_day_of_month = (dayofmonth != dayofmonth[1] and dayofmonth[1] > dayofmonth) or 
+                   (month != month[1])
+
+if last_day_of_month
+    if current_position == "long"
+        strategy.close("Long", comment="Month End Exit")
+        current_position := "none"
+    if current_position == "short"
+        strategy.close("Short", comment="Month End Exit")
+        current_position := "none"
+
+// Visual Signals
+plotshape(new_month and last_year_return > 0 and enable_long, title="Long Entry", 
+          location=location.belowbar, style=shape.triangleup, color=color.green, 
+          size=size.normal, text="LONG")
+          
+plotshape(new_month and last_year_return < 0 and enable_short, title="Short Entry", 
+          location=location.abovebar, style=shape.triangledown, color=color.red, 
+          size=size.normal, text="SHORT")
+
+// Plot monthly return reference line
+hline(0, "Zero Return", color.gray, hline.style_dashed)
+
+// Background coloring for seasonal bias
+bgcolor(new_month and last_year_return > 0 ? color.new(color.green, 90) : new_month and last_year_return < 0 ? color.new(color.red, 90) : na, title="Seasonal Bias")
+
+// Create seasonal info table
+if barstate.islast
+    var table seasonal_table = table.new(position.top_right, 2, 8, bgcolor=color.white, border_width=1)
+    
+    // Get month names
+    month_names = array.from("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    current_month_name = array.get(month_names, month - 1)
+    
+    table.cell(seasonal_table, 0, 0, "SPY SEASONAL", text_color=color.black, text_size=size.normal, bgcolor=color.yellow)
+    table.cell(seasonal_table, 1, 0, "", text_color=color.black, text_size=size.normal, bgcolor=color.yellow)
+    
+    table.cell(seasonal_table, 0, 1, "Current Month:", text_color=color.black, text_size=size.small)
+    table.cell(seasonal_table, 1, 1, current_month_name, text_color=color.blue, text_size=size.small)
+    
+    table.cell(seasonal_table, 0, 2, "Last Year Return:", text_color=color.black, text_size=size.small)
+    table.cell(seasonal_table, 1, 2, na(last_year_return) ? "N/A" : str.tostring(last_year_return, "#.##") + "%", 
+               text_color=na(last_year_return) ? color.gray : last_year_return > 0 ? color.green : color.red, text_size=size.small)
+    
+    table.cell(seasonal_table, 0, 3, "Seasonal Bias:", text_color=color.black, text_size=size.small)
+    bias_text = na(last_year_return) ? "NEUTRAL" : last_year_return > 0 ? "BULLISH" : "BEARISH"
+    bias_color = na(last_year_return) ? color.gray : last_year_return > 0 ? color.green : color.red
+    table.cell(seasonal_table, 1, 3, bias_text, text_color=bias_color, text_size=size.small)
+    
+    table.cell(seasonal_table, 0, 4, "Current Position:", text_color=color.black, text_size=size.small)
+    position_text = current_position == "long" ? "LONG" : current_position == "short" ? "SHORT" : "NONE"
+    position_color = current_position == "long" ? color.green : current_position == "short" ? color.red : color.gray
+    table.cell(seasonal_table, 1, 4, position_text, text_color=position_color, text_size=size.small)
+    
+    table.cell(seasonal_table, 0, 5, "Entry Price:", text_color=color.black, text_size=size.small)
+    table.cell(seasonal_table, 1, 5, na(entry_price) ? "N/A" : "$" + str.tostring(entry_price, "#.##"), 
+               text_color=color.blue, text_size=size.small)
+    
+    table.cell(seasonal_table, 0, 6, "Current Price:", text_color=color.black, text_size=size.small)
+    table.cell(seasonal_table, 1, 6, "$" + str.tostring(close, "#.##"), text_color=color.blue, text_size=size.small)
+    
+    table.cell(seasonal_table, 0, 7, "P&L:", text_color=color.black, text_size=size.small)
+    current_pnl = if not na(entry_price) and current_position != "none"
+        if current_position == "long"
+            (close - entry_price) / entry_price * 100
+        else
+            (entry_price - close) / entry_price * 100
+    else
+        0.0
+    table.cell(seasonal_table, 1, 7, str.tostring(current_pnl, "#.##") + "%", 
+               text_color=current_pnl > 0 ? color.green : current_pnl < 0 ? color.red : color.gray, text_size=size.small)
